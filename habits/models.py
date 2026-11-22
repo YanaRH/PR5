@@ -29,6 +29,10 @@ class Habit(models.Model):
         validators=[validate_time_limit],
         verbose_name='Время на выполнение (сек)',
     )
+    last_reminder_sent = models.DateField(
+        null=True, blank=True,
+        verbose_name='Дата последнего напоминания',
+    )
     is_public = models.BooleanField(default=False, verbose_name='Публичная')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

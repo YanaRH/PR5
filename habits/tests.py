@@ -1,7 +1,9 @@
+from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -12,6 +14,8 @@ User = get_user_model()
 
 
 class BaseAPITestCase(TestCase):
+    """Базовый класс с двумя пользователями и авторизованным клиентом."""
+
     def setUp(self):
         self.user = User.objects.create_user(
             email='test@example.com', password='testpass123',
@@ -24,6 +28,8 @@ class BaseAPITestCase(TestCase):
 
 
 class AuthTestCase(TestCase):
+    """Регистрация, логин, профиль."""
+
     def setUp(self):
         self.client = APIClient()
 
@@ -51,7 +57,7 @@ class AuthTestCase(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['email'], 'p@b.com')
 
-    def test_profile_update(self):
+    def test_profile_update_telegram_chat_id(self):
         user = User.objects.create_user(email='p2@b.com', password='StrongPass2026!')
         self.client.force_authenticate(user=user)
         response = self.client.patch('/api/users/me/', {
@@ -63,10 +69,15 @@ class AuthTestCase(TestCase):
 
 
 class HabitAPITestCase(BaseAPITestCase):
+    """CRUD привычек, права доступа, пагинация, публичный список."""
+
     def _payload(self, **overrides):
         data = {
-            'place': 'Дом', 'time': '10:00:00', 'action': 'Читать',
-            'periodicity': 1, 'time_to_complete': 60,
+            'place': 'Дом',
+            'time': '10:00:00',
+            'action': 'Читать',
+            'periodicity': 1,
+            'time_to_complete': 60,
         }
         data.update(overrides)
         return data
@@ -92,9 +103,29 @@ class HabitAPITestCase(BaseAPITestCase):
         response = self.client.get(f'/api/habits/{other.pk}/')
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_update_own_habit(self):
+        habit = Habit.objects.create(user=self.user, **self._payload())
+        response = self.client.patch(
+            f'/api/habits/{habit.pk}/',
+            {'action': 'Новое действие'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        habit.refresh_from_db()
+        self.assertEqual(habit.action, 'Новое действие')
+
+    def test_delete_own_habit(self):
+        habit = Habit.objects.create(user=self.user, **self._payload())
+        response = self.client.delete(f'/api/habits/{habit.pk}/')
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(Habit.objects.filter(pk=habit.pk).exists())
+
     def test_pagination_limit_offset(self):
         for i in range(7):
-            Habit.objects.create(user=self.user, **self._payload(action=f'Действие {i}'))
+            Habit.objects.create(
+                user=self.user,
+                **self._payload(action=f'Действие {i}'),
+            )
         response = self.client.get('/api/habits/?limit=5&offset=0')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['count'], 7)
@@ -104,25 +135,39 @@ class HabitAPITestCase(BaseAPITestCase):
     def test_public_habits(self):
         Habit.objects.create(user=self.user, **self._payload(is_public=True))
         Habit.objects.create(user=self.other_user, **self._payload(is_public=True))
+        Habit.objects.create(user=self.user, **self._payload(is_public=False))
         response = self.client.get('/api/habits/public/')
         self.assertEqual(response.data['count'], 2)
 
 
 class ValidatorsTestCase(BaseAPITestCase):
+    """Все 6 валидаторов из ТЗ."""
+
     def _payload(self, **overrides):
         data = {
-            'place': 'Дом', 'time': '10:00:00', 'action': 'Читать',
-            'periodicity': 1, 'time_to_complete': 60,
+            'place': 'Дом',
+            'time': '10:00:00',
+            'action': 'Читать',
+            'periodicity': 1,
+            'time_to_complete': 60,
         }
         data.update(overrides)
         return data
 
     def test_time_limit_exceeded(self):
-        response = self.client.post('/api/habits/', self._payload(time_to_complete=200), format='json')
+        response = self.client.post(
+            '/api/habits/',
+            self._payload(time_to_complete=200),
+            format='json',
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_periodicity_out_of_range(self):
-        response = self.client.post('/api/habits/', self._payload(periodicity=8), format='json')
+        response = self.client.post(
+            '/api/habits/',
+            self._payload(periodicity=8),
+            format='json',
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_reward_and_related_habit_conflict(self):
@@ -130,9 +175,11 @@ class ValidatorsTestCase(BaseAPITestCase):
             user=self.user, place='Дом', time='09:00:00', action='Ванна',
             is_pleasant=True, periodicity=1, time_to_complete=30,
         )
-        response = self.client.post('/api/habits/', self._payload(
-            reward='Десерт', related_habit=pleasant.pk,
-        ), format='json')
+        response = self.client.post(
+            '/api/habits/',
+            self._payload(reward='Десерт', related_habit=pleasant.pk),
+            format='json',
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_related_habit_must_be_pleasant(self):
@@ -140,15 +187,19 @@ class ValidatorsTestCase(BaseAPITestCase):
             user=self.user, place='Дом', time='09:00:00', action='Зарядка',
             is_pleasant=False, periodicity=1, time_to_complete=30,
         )
-        response = self.client.post('/api/habits/', self._payload(
-            related_habit=not_pleasant.pk,
-        ), format='json')
+        response = self.client.post(
+            '/api/habits/',
+            self._payload(related_habit=not_pleasant.pk),
+            format='json',
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_pleasant_habit_cannot_have_reward(self):
-        response = self.client.post('/api/habits/', self._payload(
-            is_pleasant=True, reward='Торт',
-        ), format='json')
+        response = self.client.post(
+            '/api/habits/',
+            self._payload(is_pleasant=True, reward='Торт'),
+            format='json',
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_pleasant_habit_cannot_have_related(self):
@@ -156,40 +207,140 @@ class ValidatorsTestCase(BaseAPITestCase):
             user=self.user, place='Дом', time='09:00:00', action='Ванна',
             is_pleasant=True, periodicity=1, time_to_complete=30,
         )
-        response = self.client.post('/api/habits/', self._payload(
-            is_pleasant=True, related_habit=pleasant.pk,
-        ), format='json')
+        response = self.client.post(
+            '/api/habits/',
+            self._payload(is_pleasant=True, related_habit=pleasant.pk),
+            format='json',
+        )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 class CeleryTasksTestCase(TestCase):
+    """Задача send_habit_reminders: отправка, ошибки, периодичность."""
+
     def setUp(self):
         self.user = User.objects.create_user(
-            email='tg@example.com', password='StrongPass2026!',
+            email='tg@example.com',
+            password='StrongPass2026!',
             telegram_chat_id='123456',
         )
 
+    def _mock_success(self, mock_post):
+        """Мок успешной отправки через direct-запрос."""
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {'ok': True}
+
     @patch('habits.tasks.requests.post')
-    def test_send_reminders(self, mock_post):
-        from django.utils import timezone
+    def test_send_reminders_success(self, mock_post):
+        """Успешная отправка: один вызов, статус 'sent 1'."""
+        self._mock_success(mock_post)
         now = timezone.localtime()
         Habit.objects.create(
-            user=self.user, place='Дом',
+            user=self.user,
+            place='Дом',
             time=now.time().replace(second=0, microsecond=0),
-            action='Читать', periodicity=1, time_to_complete=60,
+            action='Читать',
+            periodicity=1,
+            time_to_complete=60,
+        )
+        result = send_habit_reminders()
+        self.assertIn('sent 1', result)
+        mock_post.assert_called_once()
+        habit = Habit.objects.first()
+        self.assertEqual(habit.last_reminder_sent, now.date())
+
+    @patch('habits.tasks.requests.get')
+    @patch('habits.tasks.requests.post')
+    def test_send_reminders_handles_error(self, mock_post, mock_get):
+        """Direct и proxy падают — задача не падает, возвращает 'sent 0'."""
+        mock_post.side_effect = Exception('direct fail')
+        mock_get.side_effect = Exception('proxy fail')
+        now = timezone.localtime()
+        Habit.objects.create(
+            user=self.user,
+            place='Дом',
+            time=now.time().replace(second=0, microsecond=0),
+            action='Читать',
+            periodicity=1,
+            time_to_complete=60,
         )
         result = send_habit_reminders()
         self.assertIn('Processed', result)
-        mock_post.assert_called()
+        self.assertIn('sent 0', result)
+        habit = Habit.objects.first()
+        self.assertIsNone(habit.last_reminder_sent)
 
-    @patch('habits.tasks.requests.post', side_effect=Exception('fail'))
-    def test_send_reminders_handles_error(self, mock_post):
-        from django.utils import timezone
+    @patch('habits.tasks.requests.post')
+    def test_periodicity_respected(self, mock_post):
+        """Привычка с periodicity=7 и last_reminder_sent 3 дня назад — пропуск."""
         now = timezone.localtime()
         Habit.objects.create(
-            user=self.user, place='Дом',
+            user=self.user,
+            place='Дом',
             time=now.time().replace(second=0, microsecond=0),
-            action='Читать', periodicity=1, time_to_complete=60,
+            action='Читать',
+            periodicity=7,
+            time_to_complete=60,
+            last_reminder_sent=now.date() - timedelta(days=3),
         )
-        # не должно падать
-        send_habit_reminders()
+        result = send_habit_reminders()
+        mock_post.assert_not_called()
+        self.assertIn('sent 0', result)
+
+    @patch('habits.tasks.requests.post')
+    def test_periodicity_elapsed(self, mock_post):
+        """Привычка с periodicity=7 и last_reminder_sent 8 дней назад — отправка."""
+        self._mock_success(mock_post)
+        now = timezone.localtime()
+        Habit.objects.create(
+            user=self.user,
+            place='Дом',
+            time=now.time().replace(second=0, microsecond=0),
+            action='Читать',
+            periodicity=7,
+            time_to_complete=60,
+            last_reminder_sent=now.date() - timedelta(days=8),
+        )
+        result = send_habit_reminders()
+        mock_post.assert_called_once()
+        self.assertIn('sent 1', result)
+
+    @patch('habits.tasks.requests.post')
+    def test_no_reminder_outside_time_window(self, mock_post):
+        """Привычка с другим временем — не попадает в выборку."""
+        now = timezone.localtime()
+        other_time = (now + timedelta(hours=3)).time().replace(
+            second=0, microsecond=0,
+        )
+        Habit.objects.create(
+            user=self.user,
+            place='Дом',
+            time=other_time,
+            action='Читать',
+            periodicity=1,
+            time_to_complete=60,
+        )
+        result = send_habit_reminders()
+        mock_post.assert_not_called()
+        self.assertIn('Processed 0', result)
+
+    @patch('habits.tasks.requests.post')
+    def test_no_reminder_without_chat_id(self, mock_post):
+        """У пользователя без telegram_chat_id — ничего не отправляется."""
+        user_no_tg = User.objects.create_user(
+            email='nopush@example.com',
+            password='StrongPass2026!',
+            telegram_chat_id='',
+        )
+        now = timezone.localtime()
+        Habit.objects.create(
+            user=user_no_tg,
+            place='Дом',
+            time=now.time().replace(second=0, microsecond=0),
+            action='Читать',
+            periodicity=1,
+            time_to_complete=60,
+        )
+        result = send_habit_reminders()
+        mock_post.assert_not_called()
+        self.assertIn('Processed 0', result)
