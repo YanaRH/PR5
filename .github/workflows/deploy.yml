@@ -1,0 +1,48 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ develop ] # или ваша основная ветка (main/master)
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install flake8
+      - name: Lint with flake8
+        run: flake8 . --exclude=.venv,migrations,htmlcov
+      - name: Run tests
+        run: python manage.py test
+
+  build-check:
+    runs-on: ubuntu-latest
+    needs: test-and-lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker images
+        run: docker compose build
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [ test-and-lint, build-check ]
+    if: github.ref == 'refs/heads/develop'
+    steps:
+      - name: Deploy to Server via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /home/ubuntu/atomic_habits
+            git pull origin develop
+            docker compose up -d --build
+            docker system prune -f
